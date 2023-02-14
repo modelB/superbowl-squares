@@ -5,10 +5,6 @@ import "chainlink/contracts/src/v0.8/ConfirmedOwner.sol";
 import "chainlink/contracts/src/v0.8/VRFV2WrapperConsumerBase.sol";
 
 contract SuperbowlSquares is VRFV2WrapperConsumerBase, ConfirmedOwner {
-    uint256 public squarePrice;
-    bool public numbersSet = false;
-    mapping(uint256 => address) public squares;
-
     event RequestSent(uint256 requestId, uint32 numWords);
     event RequestFulfilled(
         uint256 requestId,
@@ -19,6 +15,9 @@ contract SuperbowlSquares is VRFV2WrapperConsumerBase, ConfirmedOwner {
     error WrongPrice(uint256 expected, uint256 actual);
     error NumbersSet();
     error OutOfBoundsSelection(uint256 selection);
+    error AlreadyTaken(uint256 selection);
+    error NoBalance();
+    error TransferFailed();
 
     struct RequestStatus {
         uint256 paid; // amount paid in link
@@ -27,6 +26,11 @@ contract SuperbowlSquares is VRFV2WrapperConsumerBase, ConfirmedOwner {
     }
 
     mapping(uint256 => RequestStatus) public s_requests; /* requestId --> requestStatus */
+    mapping(uint256 => address) public squares;
+    mapping(address => uint256) internal balancesByAddress;
+    uint256 public squarePrice;
+    uint256 private numSquaresBought = 0;
+    bool public numbersSet = false;
 
     // past requests Id.
     uint256[] public requestIds;
@@ -37,7 +41,7 @@ contract SuperbowlSquares is VRFV2WrapperConsumerBase, ConfirmedOwner {
     // this limit based on the network that you select, the size of the request,
     // and the processing of the callback request in the fulfillRandomWords()
     // function.
-    uint32 callbackGasLimit = 1000000;
+    uint32 callbackGasLimit = 100000;
 
     // The default is 3, but you can set this higher.
     uint16 requestConfirmations = 3;
@@ -59,8 +63,15 @@ contract SuperbowlSquares is VRFV2WrapperConsumerBase, ConfirmedOwner {
         squarePrice = price;
     }
 
+    function getSquares() public view returns (address[100] memory squaresAddresses) {
+        for (uint256 i = 1; i <= 100; i++) {
+            squaresAddresses[i - 1] = squares[i];
+        }
+        return squaresAddresses;
+    }
+
     function requestRandomWords()
-        external
+        internal
         onlyOwner
         returns (uint256 requestId)
     {
@@ -119,9 +130,16 @@ contract SuperbowlSquares is VRFV2WrapperConsumerBase, ConfirmedOwner {
         );
     }
 
-    function withdraw() public payable onlyOwner {
-        (bool success, )= msg.sender.call{value: address(this).balance}("");
-        require(success, "Transfer failed.");
+    function withdrawBalance() public payable {
+        if (balancesByAddress[msg.sender] == 0) {
+            revert NoBalance();
+        }
+        uint256 payment = balancesByAddress[msg.sender];
+        balancesByAddress[msg.sender] = 0;
+        (bool success, ) = msg.sender.call{value: payment}("");
+        if (success != true) {
+            revert TransferFailed();
+        }
     }
 
     function buySquare(uint256 squareNumber) public payable {
@@ -137,11 +155,20 @@ contract SuperbowlSquares is VRFV2WrapperConsumerBase, ConfirmedOwner {
             revert OutOfBoundsSelection(squareNumber);
         }
 
-        require(squares[squareNumber] == address(0), "Square is already taken");
+        if (squares[squareNumber] != address(0)) {
+            revert AlreadyTaken(squareNumber);
+        }
+
         squares[squareNumber] = msg.sender;
     }
 
-    function setNumbers() public onlyOwner {}
+    function setNumbers() public onlyOwner {
+        if (numbersSet) {
+            revert NumbersSet();
+        }
+
+        requestRandomWords();
+    }
 
     receive() external payable {}
 }
